@@ -1,7 +1,7 @@
 {
   "name": "Weekrooster",
   "short_name": "Weekrooster",
-  "start_url": "/RoosterNaarICS/",
+  "start_url": "/meancorpuscularvolume/",
   "scope": "/RoosterNaarICS/",
   "display": "standalone",
   "background_color": "#ffffff",
