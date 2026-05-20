@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Weekrooster">
+  <link rel="manifest" href="manifest.json">
+  <title>Weekrooster → iCalendar</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+    label { display: block; margin: 0.5rem 0 0.2rem; }
+    input[type=text], input[type=file], button { width: 100%; padding: 0.5rem; box-sizing: border-box; }
+    button { cursor: pointer; margin-top: 1rem; margin-bottom: 1rem; }
+    input[type=file] { margin-bottom: 1rem; }
+
+    /* combobox */
+    #comboWrapper { position: relative; margin-bottom: 1rem; }
+    #personInput  { width: 100%; padding: 0.5rem; box-sizing: border-box; }
+    #dropdown {
+      display: none; position: absolute; top: 100%; left: 0; right: 0;
+      border: 1px solid #ccc; background: #fff;
+      max-height: 220px; overflow-y: auto; z-index: 100;
+    }
+    #dropdown div { padding: 0.4rem 0.5rem; cursor: pointer; }
+    #dropdown div:hover { background: #f0f0f0; }
+    #dropdown .no-result { color: #999; cursor: default; }
+    #dropdown .no-result:hover { background: none; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { border: 1px solid #ccc; padding: 0.3rem; text-align: left; }
+    #preview { max-height: 300px; overflow-y: auto; }
+    #log { font-size: 0.9rem; color: #555; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+  <h1>Weekrooster → iCalendar</h1>
+
+  <label for="fileInput">Upload Excel-bestand:</label>
+  <input type="file" id="fileInput" accept=".xlsx" />
+
+  <label for="personInput">Zoek persoon:</label>
+  <div id="comboWrapper">
+    <input type="text" id="personInput" placeholder="Typ een naam…" disabled autocomplete="off" />
+    <div id="dropdown"></div>
+  </div>
+
+  <button id="generateBtn" disabled>Bekijk agenda</button>
+  <pre id="log"></pre>
+  <div id="preview"></div>
+
+  <script>
+    const EXCLUDE_NAMES = [
+      'assistent gipspoli','assistent pok','assistent poli/ok','pieper seh',
+      'consulent','vaattelefoon','sv gips','sv seh','acute chirurgie seh',
+      'visite trauma','visite 4j','visite ge','visite vaat','visite aoa',
+      'dienst','co-assistenten:','trauma 4992','ge 4886','vaten 4913',
+      'mamma','rö/aoa/seh','overig (keuze)'
+    ];
+    const COLUMN_SLOTS = [
+      {col:2, day:0, slot:'ochtend'}, {col:4, day:0, slot:'middag'},
+      {col:7, day:1, slot:'ochtend'}, {col:9, day:1, slot:'middag'},
+      {col:12,day:2, slot:'ochtend'}, {col:14,day:2, slot:'middag'},
+      {col:17,day:3, slot:'ochtend'}, {col:19,day:3, slot:'middag'},
+      {col:22,day:4, slot:'ochtend'}, {col:24,day:4, slot:'middag'},
+      {col:26,day:5, slot:'weekend'}, {col:28,day:6, slot:'weekend'}
+    ];
+
+    let sheetData, weekDates, allNames = [], selectedPerson = null;
+    const fileInput   = document.getElementById('fileInput');
+    const personInput = document.getElementById('personInput');
+    const dropdown    = document.getElementById('dropdown');
+    const generateBtn = document.getElementById('generateBtn');
+    const log         = document.getElementById('log');
+    const preview     = document.getElementById('preview');
+
+    const pad          = n => String(n).padStart(2,'0');
+    const fmtLocalDate = dt => `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`;
+    const fmtLocalICS  = dt =>
+      `${dt.getFullYear()}${pad(dt.getMonth()+1)}${pad(dt.getDate())}` +
+      `T${pad(dt.getHours())}${pad(dt.getMinutes())}00`;
+
+    // Register service worker
+    if('serviceWorker' in navigator){
+      navigator.serviceWorker.register('sw.js')
+        .catch(e => console.warn('SW registration failed:', e));
+    }
+
+    fileInput.addEventListener('change', async e => {
+      const file = e.target.files[0]; if(!file) return;
+      log.textContent = 'Laden…';
+      const data = await file.arrayBuffer();
+      const wb   = XLSX.read(data, {cellDates:true});
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      sheetData  = XLSX.utils.sheet_to_json(ws, {header:1, raw:true});
+      loadWeekDates(); loadPersons(); log.textContent = '';
+    });
+
+    function loadWeekDates(){
+      const dates = [];
+      for(let r=0; r<40 && r<sheetData.length; r++){
+        for(let c=0; c<31 && c<sheetData[r].length; c++){
+          const v = sheetData[r][c];
+          if(v instanceof Date){
+            const d = new Date(v.getFullYear(), v.getMonth(), v.getDate());
+            if(!dates.some(x=>x.getTime()===d.getTime())) dates.push(d);
+          }
+        }
+      }
+      dates.sort((a,b)=>a-b);
+      weekDates = dates.slice(0,7).map(d => new Date(2026, d.getMonth(), d.getDate()));
+    }
+
+    function loadPersons(){
+      allNames = [];
+      for(let r=8; r<sheetData.length; r++){
+        const v = sheetData[r][0];
+        if(typeof v === 'string'){
+          const nm = v.trim();
+          if(nm && !allNames.includes(nm) && !EXCLUDE_NAMES.includes(nm.toLowerCase()))
+            allNames.push(nm);
+        }
+      }
+      personInput.disabled  = false;
+      personInput.value     = '';
+      selectedPerson        = null;
+      generateBtn.disabled  = true;
+      dropdown.style.display= 'none';
+    }
+
+    personInput.addEventListener('input', () => {
+      const query = personInput.value.trim().toLowerCase();
+      selectedPerson       = null;
+      generateBtn.disabled = true;
+      if(!query){ dropdown.style.display='none'; dropdown.innerHTML=''; return; }
+      const matches = allNames.filter(nm => nm.toLowerCase().includes(query));
+      dropdown.innerHTML = '';
+      if(!matches.length){
+        const item = document.createElement('div');
+        item.className = 'no-result'; item.textContent = 'Geen resultaten';
+        dropdown.appendChild(item);
+      } else {
+        matches.forEach(nm => {
+          const item = document.createElement('div');
+          const idx  = nm.toLowerCase().indexOf(query);
+          item.innerHTML =
+            nm.slice(0,idx) +
+            `<strong>${nm.slice(idx, idx+query.length)}</strong>` +
+            nm.slice(idx+query.length);
+          item.addEventListener('mousedown', e => {
+            e.preventDefault();
+            personInput.value    = nm;
+            selectedPerson       = nm;
+            generateBtn.disabled = false;
+            dropdown.style.display = 'none';
+          });
+          dropdown.appendChild(item);
+        });
+      }
+      dropdown.style.display = 'block';
+    });
+
+    personInput.addEventListener('blur', () => {
+      setTimeout(() => { dropdown.style.display = 'none'; }, 150);
+    });
+    personInput.addEventListener('focus', () => {
+      if(personInput.value.trim()) personInput.dispatchEvent(new Event('input'));
+    });
+
+    generateBtn.addEventListener('click', () => {
+      preview.innerHTML = '';
+      if(!selectedPerson){ preview.textContent = 'Kies eerst een persoon.'; return; }
+      const person = selectedPerson;
+      const row = sheetData.findIndex(r =>
+        r[0] && typeof r[0]==='string' && r[0].trim().toLowerCase()===person.toLowerCase()
+      );
+      if(row === -1){ preview.textContent = 'Persoon niet gevonden.'; return; }
+
+      const dayNames = ['maandag','dinsdag','woensdag','donderdag','vrijdag','zaterdag','zondag'];
+      const events   = [];
+
+      COLUMN_SLOTS.forEach(({col, day, slot}) => {
+        let val = sheetData[row][col]; if(!val) return;
+        let text = val.toString().trim();
+        let pd   = slot;
+        const low = text.toLowerCase();
+
+        if(/\/dl/i.test(text))      pd = 'avonddienstDL';
+        else if(low === 'avond')    pd = 'avonddienstAvond';
+        else if(low === 'nacht')    pd = 'nacht';
+        else if(slot === 'weekend'){
+          if(low === 'dag')         pd = 'dag';
+          else if(low === 'nacht')  pd = 'nacht';
+          else return;
+        }
+
+        let sh, sm, eh, em;
+        if     (pd==='ochtend')          { sh=8;  sm=0;  eh=12; em=30; }
+        else if(pd==='middag')           { sh=13; sm=0;  eh=17; em=0;  }
+        else if(pd==='avonddienstDL')    { sh=12; sm=0;  eh=21; em=30; }
+        else if(pd==='avonddienstAvond') { sh=16; sm=0;  eh=23; em=0;  }
+        else if(pd==='dag')              { sh=9;  sm=0;  eh=21; em=0;  }
+        else if(pd==='nacht'){
+          if     (day < 5)  { sh=21; sm=30; eh=8; em=0; }
+          else if(day === 5){ sh=21; sm=0;  eh=9; em=0; }
+          else               { sh=21; sm=0;  eh=8; em=0; }
+        } else return;
+
+        const d       = weekDates[day];
+        const dtStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), sh, sm);
+        let   dtEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), eh, em);
+        if((pd==='nacht' && eh<sh) || (pd.startsWith('avonddienst') && eh<sh))
+          dtEnd.setDate(dtEnd.getDate()+1);
+
+        let summary = text;
+        if(pd==='avonddienstDL'){
+          const rest = text.split(/\/dl/i)[1]||'';
+          summary = 'Avonddienst / '+rest.trim();
+        } else if(pd==='avonddienstAvond'){
+          summary = 'Avonddienst';
+        }
+
+        let label = pd;
+        if(['dag','nacht'].includes(pd))      label = pd.charAt(0).toUpperCase()+pd.slice(1);
+        else if(pd.startsWith('avonddienst')) label = 'Avonddienst';
+
+        events.push({
+          dtStart, dtEnd, summary,
+          description: `${person} - ${text} (${label} ${dayNames[day]})`
+        });
+      });
+
+      if(!events.length){ preview.textContent='Geen activiteiten.'; return; }
+
+      const tbl = document.createElement('table');
+      let html  = '<tr><th>Datum</th><th>Van</th><th>Tot</th><th>Activiteit</th></tr>';
+      events.forEach(ev => {
+        const d    = fmtLocalDate(ev.dtStart);
+        const from = `${pad(ev.dtStart.getHours())}:${pad(ev.dtStart.getMinutes())}`;
+        const to   = `${pad(ev.dtEnd.getHours())}:${pad(ev.dtEnd.getMinutes())}`;
+        html += `<tr><td>${d}</td><td>${from}</td><td>${to}</td><td>${ev.summary}</td></tr>`;
+      });
+      tbl.innerHTML = html; preview.append(tbl);
+
+      const dlBtn = document.createElement('button');
+      dlBtn.textContent = 'Download .ics';
+      dlBtn.onclick = () => downloadICS(person, events);
+      preview.append(dlBtn);
+    });
+
+    function downloadICS(person, events){
+      const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Weekrooster//NL'];
+      const stamp = fmtLocalICS(new Date());
+      events.forEach(ev => {
+        const uid = crypto.randomUUID();
+        const ds  = fmtLocalICS(ev.dtStart);
+        const de  = fmtLocalICS(ev.dtEnd);
+        lines.push(
+          'BEGIN:VEVENT',
+          `UID:${uid}`, `DTSTAMP:${stamp}`,
+          `DTSTART;TZID=Europe/Amsterdam:${ds}`,
+          `DTEND;TZID=Europe/Amsterdam:${de}`,
+          `SUMMARY:${ev.summary}`,
+          `DESCRIPTION:${ev.description}`,
+          'END:VEVENT'
+        );
+      });
+      lines.push('END:VCALENDAR');
+      const blob = new Blob([lines.join('\r\n')], {type:'text/calendar'});
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a'); a.href = url;
+      a.download = `rooster_${person.replace(/\s+/g,'_')}_${fmtLocalDate(weekDates[0])}.ics`;
+      document.body.appendChild(a); a.click(); URL.revokeObjectURL(url); a.remove();
+    }
+  </script>
+</body>
+</html>
