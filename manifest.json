@@ -1,8 +1,8 @@
 {
   "name": "Weekrooster",
   "short_name": "Weekrooster",
-  "start_url": "/weekrooster/",
-  "scope": "/weekrooster/",
+  "start_url": "/RoosterNaarICS/",
+  "scope": "/RoosterNaarICS/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#ffffff",
