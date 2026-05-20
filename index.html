@@ -16,8 +16,6 @@
     input[type=text], input[type=file], button { width: 100%; padding: 0.5rem; box-sizing: border-box; }
     button { cursor: pointer; margin-top: 1rem; margin-bottom: 1rem; }
     input[type=file] { margin-bottom: 1rem; }
-
-    /* combobox */
     #comboWrapper { position: relative; margin-bottom: 1rem; }
     #personInput  { width: 100%; padding: 0.5rem; box-sizing: border-box; }
     #dropdown {
@@ -29,7 +27,6 @@
     #dropdown div:hover { background: #f0f0f0; }
     #dropdown .no-result { color: #999; cursor: default; }
     #dropdown .no-result:hover { background: none; }
-
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { border: 1px solid #ccc; padding: 0.3rem; text-align: left; }
     #preview { max-height: 300px; overflow-y: auto; }
@@ -84,11 +81,8 @@
       `${dt.getFullYear()}${pad(dt.getMonth()+1)}${pad(dt.getDate())}` +
       `T${pad(dt.getHours())}${pad(dt.getMinutes())}00`;
 
-    // Register service worker
-    if('serviceWorker' in navigator){
-      navigator.serviceWorker.register('sw.js')
-        .catch(e => console.warn('SW registration failed:', e));
-    }
+    if('serviceWorker' in navigator)
+      navigator.serviceWorker.register('sw.js').catch(e=>console.warn('SW failed:',e));
 
     fileInput.addEventListener('change', async e => {
       const file = e.target.files[0]; if(!file) return;
@@ -101,179 +95,210 @@
     });
 
     function loadWeekDates(){
-      const dates = [];
-      for(let r=0; r<40 && r<sheetData.length; r++){
-        for(let c=0; c<31 && c<sheetData[r].length; c++){
-          const v = sheetData[r][c];
-          if(v instanceof Date){
-            const d = new Date(v.getFullYear(), v.getMonth(), v.getDate());
+      const dates=[];
+      for(let r=0;r<40&&r<sheetData.length;r++){
+        for(let c=0;c<31&&c<sheetData[r].length;c++){
+          const v=sheetData[r][c]; if(v instanceof Date){
+            const d=new Date(v.getFullYear(),v.getMonth(),v.getDate());
             if(!dates.some(x=>x.getTime()===d.getTime())) dates.push(d);
-          }
-        }
-      }
+          }}}
       dates.sort((a,b)=>a-b);
-      weekDates = dates.slice(0,7).map(d => new Date(2026, d.getMonth(), d.getDate()));
+      weekDates=dates.slice(0,7).map(d=>new Date(2026,d.getMonth(),d.getDate()));
     }
 
     function loadPersons(){
-      allNames = [];
-      for(let r=8; r<sheetData.length; r++){
-        const v = sheetData[r][0];
-        if(typeof v === 'string'){
-          const nm = v.trim();
-          if(nm && !allNames.includes(nm) && !EXCLUDE_NAMES.includes(nm.toLowerCase()))
+      allNames=[];
+      for(let r=8;r<sheetData.length;r++){
+        const v=sheetData[r][0]; if(typeof v==='string'){
+          const nm=v.trim();
+          if(nm&&!allNames.includes(nm)&&!EXCLUDE_NAMES.includes(nm.toLowerCase()))
             allNames.push(nm);
-        }
-      }
-      personInput.disabled  = false;
-      personInput.value     = '';
-      selectedPerson        = null;
-      generateBtn.disabled  = true;
-      dropdown.style.display= 'none';
+        }}
+      personInput.disabled=false; personInput.value='';
+      selectedPerson=null; generateBtn.disabled=true;
+      dropdown.style.display='none';
     }
 
-    personInput.addEventListener('input', () => {
-      const query = personInput.value.trim().toLowerCase();
-      selectedPerson       = null;
-      generateBtn.disabled = true;
+    // Returns the last row (exclusive) belonging to this person.
+    // Stops when it finds another non-empty value in col 0.
+    function getPersonRowEnd(startRow){
+      for(let r=startRow+1; r<sheetData.length; r++){
+        const v=sheetData[r][0];
+        if(v && typeof v==='string' && v.trim()) return r;
+      }
+      return sheetData.length;
+    }
+
+    // Collect all non-empty cell texts in a column within a row range.
+    function collectCells(colIndex, rowStart, rowEnd){
+      const texts=[];
+      for(let r=rowStart; r<rowEnd; r++){
+        const v=sheetData[r][colIndex];
+        if(v){
+          const t=v.toString().trim();
+          if(t) texts.push(t);
+        }
+      }
+      return texts;
+    }
+
+    // Detect the dominant shift type from a list of cell texts.
+    // Priority: nacht > avonddienstDL (/DL) > avonddienstAvond (avond) > normal slot
+    function detectShiftType(texts, defaultSlot){
+      let pd = defaultSlot;
+      for(const t of texts){
+        const low=t.toLowerCase();
+        if(low==='nacht')        return 'nacht';          // highest priority, return immediately
+        if(/\/dl/i.test(t))      pd='avonddienstDL';
+        else if(low==='avond' && pd!=='avonddienstDL') pd='avonddienstAvond';
+      }
+      return pd;
+    }
+
+    // Build summary string from texts, removing shift-type tokens.
+    function buildSummary(texts, pd){
+      const filtered = texts.filter(t => {
+        const low=t.toLowerCase();
+        if(low==='nacht'||low==='avond') return false;
+        return true;
+      }).map(t => {
+        // for /DL entries: strip /DL and keep rest if any
+        if(/\/dl/i.test(t)){
+          const rest=t.split(/\/dl/i)[1]||'';
+          return rest.trim();
+        }
+        return t;
+      }).filter(t=>t.length>0);
+
+      if(pd==='nacht') return 'Nacht';
+      if(pd.startsWith('avonddienst')){
+        return filtered.length ? 'Avonddienst / '+filtered.join(' / ') : 'Avonddienst';
+      }
+      return filtered.join(' / ');
+    }
+
+    // Combobox
+    personInput.addEventListener('input', ()=>{
+      const query=personInput.value.trim().toLowerCase();
+      selectedPerson=null; generateBtn.disabled=true;
       if(!query){ dropdown.style.display='none'; dropdown.innerHTML=''; return; }
-      const matches = allNames.filter(nm => nm.toLowerCase().includes(query));
-      dropdown.innerHTML = '';
+      const matches=allNames.filter(nm=>nm.toLowerCase().includes(query));
+      dropdown.innerHTML='';
       if(!matches.length){
-        const item = document.createElement('div');
-        item.className = 'no-result'; item.textContent = 'Geen resultaten';
-        dropdown.appendChild(item);
+        const item=document.createElement('div'); item.className='no-result';
+        item.textContent='Geen resultaten'; dropdown.appendChild(item);
       } else {
-        matches.forEach(nm => {
-          const item = document.createElement('div');
-          const idx  = nm.toLowerCase().indexOf(query);
-          item.innerHTML =
-            nm.slice(0,idx) +
-            `<strong>${nm.slice(idx, idx+query.length)}</strong>` +
-            nm.slice(idx+query.length);
-          item.addEventListener('mousedown', e => {
-            e.preventDefault();
-            personInput.value    = nm;
-            selectedPerson       = nm;
-            generateBtn.disabled = false;
-            dropdown.style.display = 'none';
+        matches.forEach(nm=>{
+          const item=document.createElement('div');
+          const idx=nm.toLowerCase().indexOf(query);
+          item.innerHTML=nm.slice(0,idx)+`<strong>${nm.slice(idx,idx+query.length)}</strong>`+nm.slice(idx+query.length);
+          item.addEventListener('mousedown',e=>{
+            e.preventDefault(); personInput.value=nm; selectedPerson=nm;
+            generateBtn.disabled=false; dropdown.style.display='none';
           });
           dropdown.appendChild(item);
         });
       }
-      dropdown.style.display = 'block';
+      dropdown.style.display='block';
     });
+    personInput.addEventListener('blur',()=>{ setTimeout(()=>{ dropdown.style.display='none'; },150); });
+    personInput.addEventListener('focus',()=>{ if(personInput.value.trim()) personInput.dispatchEvent(new Event('input')); });
 
-    personInput.addEventListener('blur', () => {
-      setTimeout(() => { dropdown.style.display = 'none'; }, 150);
-    });
-    personInput.addEventListener('focus', () => {
-      if(personInput.value.trim()) personInput.dispatchEvent(new Event('input'));
-    });
+    generateBtn.addEventListener('click',()=>{
+      preview.innerHTML='';
+      if(!selectedPerson){ preview.textContent='Kies eerst een persoon.'; return; }
+      const person=selectedPerson;
+      const row=sheetData.findIndex(r=>r[0]&&typeof r[0]==='string'&&r[0].trim().toLowerCase()===person.toLowerCase());
+      if(row===-1){ preview.textContent='Persoon niet gevonden.'; return; }
 
-    generateBtn.addEventListener('click', () => {
-      preview.innerHTML = '';
-      if(!selectedPerson){ preview.textContent = 'Kies eerst een persoon.'; return; }
-      const person = selectedPerson;
-      const row = sheetData.findIndex(r =>
-        r[0] && typeof r[0]==='string' && r[0].trim().toLowerCase()===person.toLowerCase()
-      );
-      if(row === -1){ preview.textContent = 'Persoon niet gevonden.'; return; }
+      const rowEnd  = getPersonRowEnd(row);
+      const dayNames= ['maandag','dinsdag','woensdag','donderdag','vrijdag','zaterdag','zondag'];
+      const events  = [];
 
-      const dayNames = ['maandag','dinsdag','woensdag','donderdag','vrijdag','zaterdag','zondag'];
-      const events   = [];
+      COLUMN_SLOTS.forEach(({col,day,slot})=>{
+        let pd, summary, texts;
 
-      COLUMN_SLOTS.forEach(({col, day, slot}) => {
-        let val = sheetData[row][col]; if(!val) return;
-        let text = val.toString().trim();
-        let pd   = slot;
-        const low = text.toLowerCase();
-
-        if(/\/dl/i.test(text))      pd = 'avonddienstDL';
-        else if(low === 'avond')    pd = 'avonddienstAvond';
-        else if(low === 'nacht')    pd = 'nacht';
-        else if(slot === 'weekend'){
-          if(low === 'dag')         pd = 'dag';
-          else if(low === 'nacht')  pd = 'nacht';
-          else return;
+        if(slot==='weekend'){
+          // single-cell for weekend
+          const val=sheetData[row][col]; if(!val) return;
+          const text=val.toString().trim(); const low=text.toLowerCase();
+          if(low==='dag') pd='dag'; else if(low==='nacht') pd='nacht'; else return;
+          summary=pd.charAt(0).toUpperCase()+pd.slice(1);
+        } else {
+          // multi-row for weekday slots
+          texts=collectCells(col, row, rowEnd);
+          if(!texts.length) return;
+          pd=detectShiftType(texts, slot);
+          summary=buildSummary(texts, pd);
+          if(!summary) return;
         }
 
-        let sh, sm, eh, em;
+        // assign times
+        let sh,sm,eh,em;
         if     (pd==='ochtend')          { sh=8;  sm=0;  eh=12; em=30; }
         else if(pd==='middag')           { sh=13; sm=0;  eh=17; em=0;  }
         else if(pd==='avonddienstDL')    { sh=12; sm=0;  eh=21; em=30; }
         else if(pd==='avonddienstAvond') { sh=16; sm=0;  eh=23; em=0;  }
         else if(pd==='dag')              { sh=9;  sm=0;  eh=21; em=0;  }
         else if(pd==='nacht'){
-          if     (day < 5)  { sh=21; sm=30; eh=8; em=0; }
-          else if(day === 5){ sh=21; sm=0;  eh=9; em=0; }
-          else               { sh=21; sm=0;  eh=8; em=0; }
+          if     (day<5)   { sh=21; sm=30; eh=8; em=0; }
+          else if(day===5) { sh=21; sm=0;  eh=9; em=0; }
+          else              { sh=21; sm=0;  eh=8; em=0; }
         } else return;
 
         const d       = weekDates[day];
-        const dtStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), sh, sm);
-        let   dtEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), eh, em);
-        if((pd==='nacht' && eh<sh) || (pd.startsWith('avonddienst') && eh<sh))
+        const dtStart = new Date(d.getFullYear(),d.getMonth(),d.getDate(),sh,sm);
+        let   dtEnd   = new Date(d.getFullYear(),d.getMonth(),d.getDate(),eh,em);
+        if((pd==='nacht'&&eh<sh)||(pd.startsWith('avonddienst')&&eh<sh))
           dtEnd.setDate(dtEnd.getDate()+1);
 
-        let summary = text;
-        if(pd==='avonddienstDL'){
-          const rest = text.split(/\/dl/i)[1]||'';
-          summary = 'Avonddienst / '+rest.trim();
-        } else if(pd==='avonddienstAvond'){
-          summary = 'Avonddienst';
-        }
+        let label=pd;
+        if(['dag','nacht'].includes(pd))       label=pd.charAt(0).toUpperCase()+pd.slice(1);
+        else if(pd.startsWith('avonddienst'))  label='Avonddienst';
 
-        let label = pd;
-        if(['dag','nacht'].includes(pd))      label = pd.charAt(0).toUpperCase()+pd.slice(1);
-        else if(pd.startsWith('avonddienst')) label = 'Avonddienst';
-
+        const rawText=(slot==='weekend'?summary:(texts||[]).join(' / '));
         events.push({
           dtStart, dtEnd, summary,
-          description: `${person} - ${text} (${label} ${dayNames[day]})`
+          description:`${person} - ${rawText} (${label} ${dayNames[day]})`
         });
       });
 
       if(!events.length){ preview.textContent='Geen activiteiten.'; return; }
 
-      const tbl = document.createElement('table');
-      let html  = '<tr><th>Datum</th><th>Van</th><th>Tot</th><th>Activiteit</th></tr>';
-      events.forEach(ev => {
-        const d    = fmtLocalDate(ev.dtStart);
-        const from = `${pad(ev.dtStart.getHours())}:${pad(ev.dtStart.getMinutes())}`;
-        const to   = `${pad(ev.dtEnd.getHours())}:${pad(ev.dtEnd.getMinutes())}`;
-        html += `<tr><td>${d}</td><td>${from}</td><td>${to}</td><td>${ev.summary}</td></tr>`;
+      const tbl=document.createElement('table');
+      let html='<tr><th>Datum</th><th>Van</th><th>Tot</th><th>Activiteit</th></tr>';
+      events.forEach(ev=>{
+        const d   =fmtLocalDate(ev.dtStart);
+        const from=`${pad(ev.dtStart.getHours())}:${pad(ev.dtStart.getMinutes())}`;
+        const to  =`${pad(ev.dtEnd.getHours())}:${pad(ev.dtEnd.getMinutes())}`;
+        html+=`<tr><td>${d}</td><td>${from}</td><td>${to}</td><td>${ev.summary}</td></tr>`;
       });
-      tbl.innerHTML = html; preview.append(tbl);
+      tbl.innerHTML=html; preview.append(tbl);
 
-      const dlBtn = document.createElement('button');
-      dlBtn.textContent = 'Download .ics';
-      dlBtn.onclick = () => downloadICS(person, events);
+      const dlBtn=document.createElement('button');
+      dlBtn.textContent='Download .ics';
+      dlBtn.onclick=()=>downloadICS(person,events);
       preview.append(dlBtn);
     });
 
-    function downloadICS(person, events){
-      const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Weekrooster//NL'];
-      const stamp = fmtLocalICS(new Date());
-      events.forEach(ev => {
-        const uid = crypto.randomUUID();
-        const ds  = fmtLocalICS(ev.dtStart);
-        const de  = fmtLocalICS(ev.dtEnd);
-        lines.push(
-          'BEGIN:VEVENT',
-          `UID:${uid}`, `DTSTAMP:${stamp}`,
-          `DTSTART;TZID=Europe/Amsterdam:${ds}`,
-          `DTEND;TZID=Europe/Amsterdam:${de}`,
-          `SUMMARY:${ev.summary}`,
-          `DESCRIPTION:${ev.description}`,
-          'END:VEVENT'
-        );
+    function downloadICS(person,events){
+      const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Weekrooster//NL'];
+      const stamp=fmtLocalICS(new Date());
+      events.forEach(ev=>{
+        const uid=crypto.randomUUID();
+        lines.push('BEGIN:VEVENT',
+                   `UID:${uid}`,`DTSTAMP:${stamp}`,
+                   `DTSTART;TZID=Europe/Amsterdam:${fmtLocalICS(ev.dtStart)}`,
+                   `DTEND;TZID=Europe/Amsterdam:${fmtLocalICS(ev.dtEnd)}`,
+                   `SUMMARY:${ev.summary}`,
+                   `DESCRIPTION:${ev.description}`,
+                   'END:VEVENT');
       });
       lines.push('END:VCALENDAR');
-      const blob = new Blob([lines.join('\r\n')], {type:'text/calendar'});
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a'); a.href = url;
-      a.download = `rooster_${person.replace(/\s+/g,'_')}_${fmtLocalDate(weekDates[0])}.ics`;
+      const blob=new Blob([lines.join('\r\n')],{type:'text/calendar'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a'); a.href=url;
+      a.download=`rooster_${person.replace(/\s+/g,'_')}_${fmtLocalDate(weekDates[0])}.ics`;
       document.body.appendChild(a); a.click(); URL.revokeObjectURL(url); a.remove();
     }
   </script>
